@@ -1,0 +1,407 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================================
+// SYSTEM: Users, Roles, Permissions
+// ============================================================
+
+model Role {
+  id          String  @id @default(cuid())
+  name        String  @unique
+  description String?
+
+  users       User[]
+  permissions Permission[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("roles")
+}
+
+model Permission {
+  id         String  @id @default(cuid())
+  roleId     String
+  role       Role    @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  moduleName String
+  canView    Boolean @default(false)
+  canCreate  Boolean @default(false)
+  canEdit    Boolean @default(false)
+  canDelete  Boolean @default(false)
+
+  @@unique([roleId, moduleName])
+  @@map("permissions")
+}
+
+model User {
+  id        String  @id @default(cuid())
+  name      String
+  email     String  @unique
+  password  String
+  roleId    String
+  role      Role    @relation(fields: [roleId], references: [id])
+  teamId    String?
+  status    String  @default("active") // active, inactive, suspended
+
+  // Ownership relationships
+  ownedLeads    Lead[]    @relation("LeadOwner")
+  assignedLeads Lead[]    @relation("LeadAssignee")
+  ownedDeals    Deal[]    @relation("DealOwner")
+  ownedContacts Contact[] @relation("ContactOwner")
+  ownedAccounts Account[] @relation("AccountOwner")
+  assignedTasks Task[]    @relation("TaskAssignee")
+  assignedTickets Ticket[] @relation("TicketAgent")
+  activityLogs  ActivityLog[]
+  automations   Automation[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("users")
+}
+
+// ============================================================
+// CRM CORE: Leads
+// ============================================================
+
+model Lead {
+  id         String  @id @default(cuid())
+  name       String
+  email      String?
+  phone      String?
+  company    String?
+  source     String? // Website, LinkedIn, Referral, Cold Call, etc.
+  status     String  @default("New") // New, Contacted, Qualified, Converted, Lost
+  notes      String?
+
+  // Ownership
+  ownerId    String?
+  owner      User?   @relation("LeadOwner", fields: [ownerId], references: [id])
+  assignedTo String?
+  assignee   User?   @relation("LeadAssignee", fields: [assignedTo], references: [id])
+
+  // Conversion result
+  contactId  String?  @unique
+  accountId  String?
+  dealId     String?  @unique
+
+  // Linked entities after conversion
+  contact    Contact? @relation(fields: [contactId], references: [id])
+  account    Account? @relation(fields: [accountId], references: [id])
+  deal       Deal?    @relation(fields: [dealId], references: [id])
+
+  // Polymorphic tasks/emails/docs
+  tasks     Task[]     @relation("LeadTasks")
+  emails    Email[]    @relation("LeadEmails")
+  documents Document[] @relation("LeadDocuments")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status])
+  @@index([ownerId])
+  @@map("leads")
+}
+
+// ============================================================
+// CRM CORE: Contacts (People)
+// ============================================================
+
+model Contact {
+  id        String  @id @default(cuid())
+  name      String
+  email     String?
+  phone     String?
+  title     String?
+  notes     String?
+  tags      String? // comma-separated tags
+
+  accountId String?
+  account   Account? @relation(fields: [accountId], references: [id])
+
+  ownerId   String?
+  owner     User?    @relation("ContactOwner", fields: [ownerId], references: [id])
+
+  // Relationships
+  deals     Deal[]
+  tasks     Task[]     @relation("ContactTasks")
+  emails    Email[]    @relation("ContactEmails")
+  documents Document[] @relation("ContactDocuments")
+  tickets   Ticket[]
+  lead      Lead?      // back-reference from lead conversion
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([accountId])
+  @@index([email])
+  @@map("contacts")
+}
+
+// ============================================================
+// CRM CORE: Accounts (Companies)
+// ============================================================
+
+model Account {
+  id          String  @id @default(cuid())
+  name        String
+  industry    String?
+  website     String?
+  phone       String?
+  address     String?
+  employees   Int?
+  annualRevenue Float?
+
+  ownerId     String?
+  owner       User?    @relation("AccountOwner", fields: [ownerId], references: [id])
+
+  // Relationships
+  contacts    Contact[]
+  deals       Deal[]
+  tasks       Task[]     @relation("AccountTasks")
+  emails      Email[]    @relation("AccountEmails")
+  documents   Document[] @relation("AccountDocuments")
+  leads       Lead[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([ownerId])
+  @@map("accounts")
+}
+
+// ============================================================
+// CRM CORE: Deals (Opportunities / Pipeline)
+// ============================================================
+
+model Deal {
+  id              String   @id @default(cuid())
+  name            String
+  value           Float    @default(0)
+  stage           String   @default("Prospecting")
+  // Prospecting, Qualified, Proposal, Negotiation, Closed Won, Closed Lost
+  probability     Int      @default(10) // 0-100 %
+  expectedClose   DateTime?
+  notes           String?
+
+  accountId       String?
+  account         Account? @relation(fields: [accountId], references: [id])
+
+  contactId       String?
+  contact         Contact? @relation(fields: [contactId], references: [id])
+
+  ownerId         String?
+  owner           User?    @relation("DealOwner", fields: [ownerId], references: [id])
+
+  lead            Lead?    // back-reference from lead conversion
+
+  tasks     Task[]     @relation("DealTasks")
+  emails    Email[]    @relation("DealEmails")
+  documents Document[] @relation("DealDocuments")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([stage])
+  @@index([ownerId])
+  @@map("deals")
+}
+
+// ============================================================
+// CRM CORE: Tasks
+// ============================================================
+
+model Task {
+  id          String  @id @default(cuid())
+  title       String
+  description String?
+  status      String  @default("Pending") // Pending, In Progress, Done, Cancelled
+  priority    String  @default("medium")  // low, medium, high, urgent
+  dueDate     DateTime?
+  completedAt DateTime?
+
+  assignedTo  String?
+  assignee    User?   @relation("TaskAssignee", fields: [assignedTo], references: [id])
+
+  // Polymorphic — linked to Lead, Contact, Deal, or Account
+  leadId      String?
+  lead        Lead?    @relation("LeadTasks", fields: [leadId], references: [id])
+  contactId   String?
+  contact     Contact? @relation("ContactTasks", fields: [contactId], references: [id])
+  dealId      String?
+  deal        Deal?    @relation("DealTasks", fields: [dealId], references: [id])
+  accountId   String?
+  account     Account? @relation("AccountTasks", fields: [accountId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([assignedTo])
+  @@index([status])
+  @@index([dueDate])
+  @@map("tasks")
+}
+
+// ============================================================
+// COMMUNICATION: Emails
+// ============================================================
+
+model Email {
+  id          String  @id @default(cuid())
+  subject     String
+  body        String
+  sender      String
+  receiver    String
+  status      String  @default("sent") // sent, draft, received
+  isRead      Boolean @default(false)
+
+  // Polymorphic relationship
+  leadId      String?
+  lead        Lead?    @relation("LeadEmails", fields: [leadId], references: [id])
+  contactId   String?
+  contact     Contact? @relation("ContactEmails", fields: [contactId], references: [id])
+  dealId      String?
+  deal        Deal?    @relation("DealEmails", fields: [dealId], references: [id])
+  accountId   String?
+  account     Account? @relation("AccountEmails", fields: [accountId], references: [id])
+
+  createdAt DateTime @default(now())
+
+  @@index([sender])
+  @@index([receiver])
+  @@map("emails")
+}
+
+// ============================================================
+// FILES: Documents
+// ============================================================
+
+model Document {
+  id          String  @id @default(cuid())
+  name        String
+  fileUrl     String
+  fileType    String? // PDF, DOC, XLS, PPT, etc.
+  fileSize    String?
+  category    String? // Proposal, Contract, Report, etc.
+  uploadedBy  String?
+
+  // Polymorphic relationship
+  leadId      String?
+  lead        Lead?    @relation("LeadDocuments", fields: [leadId], references: [id])
+  contactId   String?
+  contact     Contact? @relation("ContactDocuments", fields: [contactId], references: [id])
+  dealId      String?
+  deal        Deal?    @relation("DealDocuments", fields: [dealId], references: [id])
+  accountId   String?
+  account     Account? @relation("AccountDocuments", fields: [accountId], references: [id])
+
+  createdAt DateTime @default(now())
+
+  @@map("documents")
+}
+
+// ============================================================
+// SUPPORT: Tickets
+// ============================================================
+
+model Ticket {
+  id            String  @id @default(cuid())
+  ticketNumber  String  @unique
+  title         String
+  description   String
+  category      String  @default("Technical") // Technical, Bug, Feature, Billing, Account
+  priority      String  @default("medium")    // low, medium, high, critical
+  status        String  @default("open")      // open, in-progress, resolved, closed
+  resolution    String?
+
+  contactId     String?
+  contact       Contact? @relation(fields: [contactId], references: [id])
+
+  assignedAgent String?
+  agent         User?    @relation("TicketAgent", fields: [assignedAgent], references: [id])
+
+  resolvedAt    DateTime?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([status])
+  @@index([priority])
+  @@map("tickets")
+}
+
+// ============================================================
+// AUTOMATION: Workflow Engine
+// ============================================================
+
+model Automation {
+  id          String  @id @default(cuid())
+  name        String
+  description String?
+  isActive    Boolean @default(true)
+  category    String  @default("Email") // Email, Tasks, Notifications, Scoring, Assignment
+
+  // Trigger: when this event fires
+  triggerType   String // lead_created, deal_stage_changed, task_overdue, etc.
+  triggerConfig String? // JSON config for the trigger (e.g. { "stage": "Closed Won" })
+
+  // Action: what to do
+  actionType    String // send_email, create_task, send_notification, update_field
+  actionConfig  String? // JSON config for the action
+
+  runCount    Int @default(0)
+  lastRunAt   DateTime?
+
+  createdBy   String?
+  creator     User?   @relation(fields: [createdBy], references: [id])
+
+  logs        AutomationLog[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("automations")
+}
+
+model AutomationLog {
+  id            String  @id @default(cuid())
+  automationId  String
+  automation    Automation @relation(fields: [automationId], references: [id], onDelete: Cascade)
+  triggerEvent  String
+  payload       String? // JSON
+  status        String  @default("success") // success, failed
+  error         String?
+  createdAt     DateTime @default(now())
+
+  @@map("automation_logs")
+}
+
+// ============================================================
+// ACTIVITY TIMELINE
+// ============================================================
+
+model ActivityLog {
+  id          String  @id @default(cuid())
+  userId      String?
+  user        User?   @relation(fields: [userId], references: [id])
+  module      String  // leads, contacts, deals, tasks, tickets, etc.
+  recordId    String  // the ID of the record that was affected
+  action      String  // created, updated, deleted, converted, stage_changed, etc.
+  description String
+  metadata    String? // JSON for extra context
+
+  createdAt DateTime @default(now())
+
+  @@index([module, recordId])
+  @@index([userId])
+  @@index([createdAt])
+  @@map("activity_logs")
+}
